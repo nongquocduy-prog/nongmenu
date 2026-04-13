@@ -1,0 +1,27 @@
+name: Build dylib
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - run: |
+        sudo apt update
+        sudo apt install git make clang ldid -y
+
+    - run: |
+        git clone --recursive https://github.com/theos/theos.git $HOME/theos
+
+    - run: |
+        export THEOS=$HOME/theos
+        export PATH=$THEOS/bin:$PATH
+        make
+
+    - uses: actions/upload-artifact@v3
+      with:
+        name: dylib
+        path: .theos/obj/debug/*.dylib
