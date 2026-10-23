@@ -1,23 +1,212 @@
-name: Build dylib
+
+name: Build Ongnongios1 dylib
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [main]
+    paths:
+      - '*.zip'
+      - '.github/workflows/build.yml'
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Build dylib
+      - name: Detect and extract source
+        shell: bash
         run: |
-          clang -dynamiclib NongMenu.m -o NongMenu.dylib
+          set -euo pipefail
+
+          mkdir -p buildsrc
+
+          ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
+            -maxdepth 1 -type f -iname '*.zip' \
+            | sort -V | tail -1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Không tìm thấy ZIP source"
+            exit 1
+          fi
+
+          echo "Building: $(basename "$ZIP_FILE")"
+
+          unzip -q -o "$ZIP_FILE" -d buildsrc
+
+          if [ ! -d buildsrc/s82 ]; then
+            echo "ERROR: Không tìm thấy thư mục s82"
+            find buildsrc -maxdepth 3 -type d
+            exit 1
+          fi
+
+      - name: Install tools
+        run: |
+          brew install ldid xz || true
+
+      - name: Install Theos
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --recursive --depth 1 \
+            https://github.com/theos/theos.git \
+            "$HOME/theos"
+
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+
+      - name: Install iOS SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 \
+            https://github.com/theos/sdks.git \
+            "$HOME/theos/sdks"
+
+      - name: Generate Build ID
+        shell: bash
+        run: |
+          BUILD_ID="ongnong_GH${GITHUB_RUN_ID}_A${GITHUB_RUN_ATTEMPT}"
+
+          echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
+          echo "ONGNONG_BUILD_CHANNEL=$BUILD_ID" >> "$GITHUB_ENV"
+
+          echo "Build ID: $BUILD_ID"
+
+      - name: Build dylib
+        shell: bash
+        env:
+          THEOS_TARGET_OVERRIDE: iphone:clang:16.5:14.0
+        run: |
+          set -euo pipefail
+
+          cd buildsrc/s82
+
+          chmod +x build_github.sh vfy.sh
+
+          ./build_github.sh
+
+      - name: Rename dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd buildsrc/s82
+
+          if [ -s Ongnongos.dylib ]; then
+            cp Ongnongos.dylib Ongnongios1.dylib
+          elif [ -s Ongnongios1.dylib ]; then
+            echo "Output already exists"
+          else
+            DYLIB="$(find . -maxdepth 3 \
+              -type f -name '*.dylib' | head -1)"
+
+            if [ -z "$DYLIB" ]; then
+              echo "ERROR: Không tìm thấy dylib"
+              exit 1
+            fi
+
+            cp "$DYLIB" Ongnongios1.dylib
+          fi
+
+          test -s Ongnongios1.dylib
+
+      - name: Verify dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          file buildsrc/s82/Ongnongios1.dylib
+
+          lipo -info \
+            buildsrc/s82/Ongnongios1.dylib || true
+
+          otool -L \
+            buildsrc/s82/Ongnongios1.dylib || true
+
+          shasum -a 256 \
+            buildsrc/s82/Ongnongios1.dylib \
+            > buildsrc/s82/Ongnongios1.dylib.sha256
+
+          HASH="$(shasum -a 256 \
+            buildsrc/s82/Ongnongios1.dylib \
+            | awk '{print $1}')"
+
+          echo "BUILD_SHA256=$HASH" >> "$GITHUB_ENV"
+
+      - name: Generate build info
+        shell: bash
+        run: |
+          cat > buildsrc/s82/BUILD_INFO.txt <<EOF
+          FILE: Ongnongios1.dylib
+          BUILD_ID: ${BUILD_ID}
+          SHA256: ${BUILD_SHA256}
+          GITHUB_RUN_ID: ${GITHUB_RUN_ID}
+          GITHUB_RUN_ATTEMPT: ${GITHUB_RUN_ATTEMPT}
+          EOF
+
+      - name: Install Telegram uploader
+        shell: bash
+        run: |
+          python3 -m pip install --break-system-packages telethon
+
+      - name: Send dylib to Telegram
+        continue-on-error: true
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import os
+          import asyncio
+          from telethon import TelegramClient
+          from telethon.sessions import MemorySession
+
+          async def main():
+              client = TelegramClient(
+                  MemorySession(),
+                  int(os.environ["TELEGRAM_API_ID"]),
+                  os.environ["TELEGRAM_API_HASH"]
+              )
+
+              await client.start(
+                  bot_token=os.environ["TELEGRAM_BOT_TOKEN"]
+              )
+
+              try:
+                  caption = (
+                      "Ongnongios1.dylib\n"
+                      f"BUILD ID: {os.environ['BUILD_ID']}\n"
+                      f"SHA256: {os.environ['BUILD_SHA256']}"
+                  )
+
+                  await client.send_file(
+                      "@filedylib",
+                      "buildsrc/s82/Ongnongios1.dylib",
+                      caption=caption,
+                      force_document=True
+                  )
+              finally:
+                  await client.disconnect()
+
+          asyncio.run(main())
+          PY
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
         with:
-          name: NongMenu
-          path: NongMenu.dylib
+          name: Ongnongios1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            buildsrc/s82/Ongnongios1.dylib
+            buildsrc/s82/Ongnongios1.dylib.sha256
+            buildsrc/s82/BUILD_INFO.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
