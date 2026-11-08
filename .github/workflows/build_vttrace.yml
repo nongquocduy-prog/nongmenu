@@ -1,0 +1,22 @@
+name: Build VTTrace dylib
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'VTTrace.mm'
+      - 'libdobby.a'
+      - '.github/workflows/build_vttrace.yml'
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile arm64 iOS dylib
+        run: |
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun clang++ -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 -fobjc-arc -std=c++17 -O2 -dynamiclib -Wl,-install_name,@executable_path/Ongnongios1.dylib -o Ongnongios1.dylib VTTrace.mm libdobby.a -framework Foundation -framework UIKit -lc++
+          file Ongnongios1.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VTTrace-Ongnongios1
+          path: Ongnongios1.dylib
