@@ -4,15 +4,23 @@ name: Build Ongnongios1 dylib
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - '*.zip'
       - '.github/workflows/build.yml'
+
+concurrency:
+  group: ongnong-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 30
+
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repo
@@ -41,21 +49,37 @@ jobs:
 
           if [ ! -d buildsrc/s82 ]; then
             echo "ERROR: Không tìm thấy thư mục s82"
-            find buildsrc -maxdepth 3 -type d
             exit 1
           fi
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd buildsrc/s82
+
+          test -f Makefile
+          test -f build_github.sh
+          test -f vfy.sh
+
+          bash -n build_github.sh
+          bash -n vfy.sh
+
+          chmod +x build_github.sh vfy.sh
+
+          echo "Source structure OK"
 
       - name: Install tools
         shell: bash
         run: |
-          brew install ldid xz || true
+          set -euo pipefail
+          brew install ldid xz
 
       - name: Install Theos
         shell: bash
         run: |
           set -euo pipefail
-
-          rm -rf "$HOME/theos"
 
           git clone --recursive --depth 1 \
             https://github.com/theos/theos.git \
@@ -74,7 +98,6 @@ jobs:
             https://github.com/theos/sdks.git \
             "$HOME/theos/sdks"
 
-          echo "Installed iOS SDKs:"
           ls -lah "$HOME/theos/sdks"
 
       - name: Generate Build ID
@@ -87,8 +110,6 @@ jobs:
           echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
           echo "ONGNONG_BUILD_CHANNEL=$BUILD_ID" >> "$GITHUB_ENV"
 
-          echo "Build ID: $BUILD_ID"
-
       - name: Build dylib
         shell: bash
         env:
@@ -98,68 +119,32 @@ jobs:
 
           cd buildsrc/s82
 
-          chmod +x build_github.sh vfy.sh
-
           ./build_github.sh
 
-      - name: Rename dylib
+      - name: Prepare Ongnongios1.dylib
         shell: bash
         run: |
           set -euo pipefail
 
           cd buildsrc/s82
 
-          if [ -s Ongnongos.dylib ]; then
+          if [ -s Ongnongios1.dylib ]; then
+            echo "Output exists"
+          elif [ -s Ongnongos.dylib ]; then
             cp Ongnongos.dylib Ongnongios1.dylib
-          elif [ -s Ongnongios1.dylib ]; then
-            echo "Output already exists"
+          elif [ -s .theos/obj/debug/Ongnongos.dylib ]; then
+            cp .theos/obj/debug/Ongnongos.dylib Ongnongios1.dylib
           else
-            DYLIB="$(find . -maxdepth 3 \
-              -type f -name '*.dylib' | head -1)"
-
-            if [ -z "$DYLIB" ]; then
-              echo "ERROR: Không tìm thấy dylib"
-              exit 1
-            fi
-
-            cp "$DYLIB" Ongnongios1.dylib
+            echo "ERROR: Không tìm thấy dylib"
+            exit 1
           fi
 
           test -s Ongnongios1.dylib
 
-      - name: Verify dylib
-        shell: bash
-        run: |
-          set -euo pipefail
+          file Ongnongios1.dylib
+          lipo -info Ongnongios1.dylib
 
-          file buildsrc/s82/Ongnongios1.dylib
-
-          lipo -info \
-            buildsrc/s82/Ongnongios1.dylib || true
-
-          otool -L \
-            buildsrc/s82/Ongnongios1.dylib || true
-
-          shasum -a 256 \
-            buildsrc/s82/Ongnongios1.dylib \
-            > buildsrc/s82/Ongnongios1.dylib.sha256
-
-          HASH="$(shasum -a 256 \
-            buildsrc/s82/Ongnongios1.dylib \
-            | awk '{print $1}')"
-
-          echo "BUILD_SHA256=$HASH" >> "$GITHUB_ENV"
-
-      - name: Generate build info
-        shell: bash
-        run: |
-          cat > buildsrc/s82/BUILD_INFO.txt <<EOF
-          FILE: Ongnongios1.dylib
-          BUILD_ID: ${BUILD_ID}
-          SHA256: ${BUILD_SHA256}
-          GITHUB_RUN_ID: ${GITHUB_RUN_ID}
-          GITHUB_RUN_ATTEMPT: ${GITHUB_RUN_ATTEMPT}
-          EOF
+          echo "BUILD OK: Ongnongios1.dylib"
 
       - name: Install Telegram uploader
         shell: bash
@@ -181,6 +166,16 @@ jobs:
           from telethon.sessions import MemorySession
 
           async def main():
+              required = [
+                  "TELEGRAM_API_ID",
+                  "TELEGRAM_API_HASH",
+                  "TELEGRAM_BOT_TOKEN"
+              ]
+
+              if any(not os.getenv(k) for k in required):
+                  print("Telegram secrets missing")
+                  return
+
               client = TelegramClient(
                   MemorySession(),
                   int(os.environ["TELEGRAM_API_ID"]),
@@ -192,16 +187,13 @@ jobs:
               )
 
               try:
-                  caption = (
-                      "Ongnongios1.dylib\n"
-                      f"BUILD ID: {os.environ['BUILD_ID']}\n"
-                      f"SHA256: {os.environ['BUILD_SHA256']}"
-                  )
-
                   await client.send_file(
                       "@filedylib",
                       "buildsrc/s82/Ongnongios1.dylib",
-                      caption=caption,
+                      caption=(
+                          "Ongnongios1.dylib\n"
+                          f"BUILD ID: {os.environ['BUILD_ID']}"
+                      ),
                       force_document=True
                   )
               finally:
@@ -213,11 +205,8 @@ jobs:
       - name: Upload dylib
         uses: actions/upload-artifact@v4
         with:
-          name: Ongnongios1-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            buildsrc/s82/Ongnongios1.dylib
-            buildsrc/s82/Ongnongios1.dylib.sha256
-            buildsrc/s82/BUILD_INFO.txt
+          name: Ongnongios1-${{ github.run_id }}
+          path: buildsrc/s82/Ongnongios1.dylib
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
