@@ -3,16 +3,6 @@ name: Build Ongnongios1 dylib
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - '*.zip'
-      - '.github/workflows/build.yml'
-
-concurrency:
-  group: ongnong-build-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -118,7 +108,6 @@ jobs:
           set -euo pipefail
 
           cd buildsrc/s82
-
           ./build_github.sh
 
       - name: Prepare Ongnongios1.dylib
